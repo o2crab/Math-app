@@ -1,0 +1,203 @@
+# .github/workflows/lightsail-deploy.yml
+#
+# main への push をきっかけに、
+#   Docker イメージのビルド → Lightsail へ push → デプロイ → 完了待ち
+# までを自動で行うサンプルです。
+#
+# 事前準備(README 相当はファイル末尾のコメントを参照)
+#   - Lightsail コンテナサービスを作成済みであること
+#   - AWS 側に GitHub OIDC 用の IAM ロールを作成済みであること
+#   - GitHub の Secrets に AWS_ROLE_ARN を登録済みであること
+
+name: Deploy to Lightsail
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch: # Actions タブから手動実行も可能
+
+# OIDC でのAWS認証に id-token: write が必要
+permissions:
+  id-token: write
+  contents: read
+
+# 同時に複数のデプロイが走らないようにする(途中キャンセルはしない)
+concurrency:
+  group: deploy-lightsail
+  cancel-in-progress: false
+
+env:
+  AWS_REGION: ap-northeast-1 # Lightsail サービスのリージョン
+  SERVICE_NAME: math-app-service # Lightsail コンテナサービス名
+  CONTAINER_NAME: app # デプロイ内のコンテナ名
+  IMAGE_LABEL: app # Lightsail 上のイメージラベル
+  CONTAINER_PORT: "8080" # アプリが待ち受けるポート
+  HEALTH_CHECK_PATH: /health # ヘルスチェック用パス
+  # lightsailctl はバージョンを固定し、ハッシュ値を検証してから使う
+  # 更新時は https://github.com/aws/lightsailctl/releases の checksums.txt から値を差し替える
+  LIGHTSAILCTL_VERSION: 1.0.8
+  LIGHTSAILCTL_SHA256: 73108f256907306ddd7fc90ff9209b8e9b256a14586c31d63222b4f58281d146 # linux_amd64.tar.gz
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # Actions はタグではなくコミット SHA で固定する(タグの付け替えによる改ざん対策)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+
+      # 1. AWS 認証(長期的なアクセスキーを使わず OIDC で一時認証)
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@7474bc4690e29a8392af63c5b98e7449536d5c3a # v4.3.1
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # 2. Lightsail へイメージを push するためのプラグインを導入
+      - name: Install lightsailctl
+        run: |
+          ARCHIVE="lightsailctl_${LIGHTSAILCTL_VERSION}_linux_amd64.tar.gz"
+          curl -fsSLO "https://github.com/aws/lightsailctl/releases/download/v${LIGHTSAILCTL_VERSION}/${ARCHIVE}"
+          echo "${LIGHTSAILCTL_SHA256}  ${ARCHIVE}" | sha256sum -c -
+          tar xzf "${ARCHIVE}" lightsailctl
+          sudo install -m 0755 lightsailctl /usr/local/bin/lightsailctl
+
+      # 3. イメージをビルド(タグはコミットSHAでトレース可能にする)
+      - name: Build Docker image
+        run: docker build -t "${SERVICE_NAME}:${GITHUB_SHA}" .
+
+      # 4. Lightsail のレジストリへ push し、デプロイで参照するイメージ名を取得
+      - name: Push image to Lightsail
+        id: push
+        run: |
+          OUTPUT=$(aws lightsail push-container-image \
+            --service-name "$SERVICE_NAME" \
+            --label "$IMAGE_LABEL" \
+            --image "${SERVICE_NAME}:${GITHUB_SHA}")
+          echo "$OUTPUT"
+
+          # このジョブで push したイメージ名(例: :math-app-service.app.12)を出力から取得する
+          # 「最新のイメージ」を問い合わせると、同時期に別経路で push されたものを拾うおそれがある
+          IMAGE=$(echo "$OUTPUT" | grep -oP 'Refer to this image as "\K[^"]+' || true)
+          if [ -z "$IMAGE" ]; then
+            echo "::error::Could not determine the pushed image name"
+            exit 1
+          fi
+          echo "image=${IMAGE}" >> "$GITHUB_OUTPUT"
+          echo "Pushed: ${IMAGE}"
+
+      # 5. デプロイ定義を作成して新しいデプロイを作成
+      - name: Create deployment
+        id: deploy
+        env:
+          IMAGE: ${{ steps.push.outputs.image }}
+        run: |
+          # コンテナ定義(環境変数が必要なら "environment" に追加)
+          jq -n \
+            --arg name "$CONTAINER_NAME" \
+            --arg image "$IMAGE" \
+            --arg port "$CONTAINER_PORT" \
+            '{
+              ($name): {
+                image: $image,
+                ports: { ($port): "HTTP" },
+                environment: { APP_ENV: "production" }
+              }
+            }' > containers.json
+
+          # 公開エンドポイント(ヘルスチェック設定を含む)
+          jq -n \
+            --arg name "$CONTAINER_NAME" \
+            --argjson port "$CONTAINER_PORT" \
+            --arg path "$HEALTH_CHECK_PATH" \
+            '{
+              containerName: $name,
+              containerPort: $port,
+              healthCheck: {
+                healthyThreshold: 2,
+                unhealthyThreshold: 2,
+                timeoutSeconds: 5,
+                intervalSeconds: 10,
+                path: $path,
+                successCodes: "200-499"
+              }
+            }' > public-endpoint.json
+
+          VERSION=$(aws lightsail create-container-service-deployment \
+            --service-name "$SERVICE_NAME" \
+            --containers file://containers.json \
+            --public-endpoint file://public-endpoint.json \
+            --query 'containerService.nextDeployment.version' \
+            --output text)
+
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "Created deployment version: ${VERSION}"
+
+      # 6. デプロイ完了(または失敗)を待つ。失敗時はジョブも失敗させる
+      - name: Wait for deployment
+        env:
+          VERSION: ${{ steps.deploy.outputs.version }}
+        run: |
+          for i in $(seq 1 40); do
+            JSON=$(aws lightsail get-container-services \
+              --service-name "$SERVICE_NAME" \
+              --query 'containerServices[0]' --output json)
+
+            CUR_VER=$(echo "$JSON" | jq -r '.currentDeployment.version // empty')
+            CUR_STATE=$(echo "$JSON" | jq -r '.currentDeployment.state // empty')
+            NEXT_VER=$(echo "$JSON" | jq -r '.nextDeployment.version // empty')
+            NEXT_STATE=$(echo "$JSON" | jq -r '.nextDeployment.state // empty')
+
+            echo "[$i] current=${CUR_VER}(${CUR_STATE}) next=${NEXT_VER}(${NEXT_STATE})"
+
+            if [ "$CUR_VER" = "$VERSION" ] && [ "$CUR_STATE" = "ACTIVE" ]; then
+              echo "Deployment ${VERSION} is ACTIVE"
+              exit 0
+            fi
+
+            if [ "$NEXT_VER" = "$VERSION" ] && [ "$NEXT_STATE" = "FAILED" ]; then
+              echo "::error::Deployment ${VERSION} failed. Lightsail keeps the previous deployment."
+              exit 1
+            fi
+
+            sleep 15
+          done
+
+          echo "::error::Timed out waiting for deployment ${VERSION}"
+          exit 1
+
+      - name: Show service URL
+        run: |
+          aws lightsail get-container-services \
+            --service-name "$SERVICE_NAME" \
+            --query 'containerServices[0].url' --output text
+
+# ---------------------------------------------------------------------------
+# 事前準備メモ
+#
+# 1) Lightsail コンテナサービスの作成(初回のみ)
+#    aws lightsail create-container-service \
+#      --service-name math-app-service --power nano --scale 1
+#
+# 2) GitHub OIDC プロバイダと IAM ロールの作成(初回のみ)
+#    - IAM > ID プロバイダ に token.actions.githubusercontent.com を追加
+#      (audience: sts.amazonaws.com)
+#    - ロールの信頼ポリシーで、audience と対象リポジトリ・ブランチの両方を限定する
+#        "Condition": {
+#          "StringEquals": {
+#            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
+#            "token.actions.githubusercontent.com:sub":
+#                "repo:<OWNER>/<REPO>:ref:refs/heads/main"
+#          }
+#        }
+#    - ロールに付与する権限(例。必要に応じて Resource を対象サービスに絞る)
+#        lightsail:RegisterContainerImage
+#        lightsail:GetContainerImages
+#        lightsail:GetContainerServices
+#        lightsail:CreateContainerServiceDeployment
+#
+# 3) GitHub の Settings > Secrets and variables > Actions に
+#    AWS_ROLE_ARN(上記ロールのARN)を登録
+#
+# 4) リポジトリのルートに Dockerfile を置く
+# ---------------------------------------------------------------------------
