@@ -47,6 +47,8 @@ jobs:
       # Actions はタグではなくコミット SHA で固定する(タグの付け替えによる改ざん対策)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
+      - run: echo ${{ env.AWS_REGION }}
+
       # 1. AWS 認証(長期的なアクセスキーを使わず OIDC で一時認証)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
