@@ -1,0 +1,51 @@
+{
+  "name": "webapp",
+
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.13-bookworm",
+
+  "features": {
+    "ghcr.io/devcontainers/features/node:2": {
+      "version": "22"
+    },
+    "ghcr.io/anthropics/devcontainer-features/claude-code:1.0": {}
+  },
+
+  // コンテナ内で使う環境変数の設定
+  "containerEnv": {
+    // bind mount 上ではハードリンクが作れないため、コピーに切り替えて警告を避ける
+    "UV_LINK_MODE": "copy"
+  },
+
+  // 5173: Vite(React) / 5000: Flask
+  "forwardPorts": [5173, 5000],
+
+  "portsAttributes": {
+    "5173": {
+      "requireLocalPort": true
+    }
+  },
+
+  // コンテナ作成後に1回実行: エイリアス設定、uv の導入、依存のインストール
+  "postCreateCommand": "bash .devcontainer/post-create.sh",
+
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python",
+        "ms-python.vscode-pylance",
+        "charliermarsh.ruff",
+        "dbaeumer.vscode-eslint",
+        "esbenp.prettier-vscode",
+        "yzhang.markdown-all-in-one",
+        "DavidAnson.vscode-markdownlint"
+      ],
+      "settings": {
+        // uv が backend/.venv に作る仮想環境を使う
+        "python.defaultInterpreterPath": "${workspaceFolder}/backend/.venv/bin/python"
+      }
+    }
+  },
+
+  // 非 root ユーザーで作業する
+  "remoteUser": "vscode"
+}
