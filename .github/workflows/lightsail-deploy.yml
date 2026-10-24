@@ -7,7 +7,7 @@
 # 事前準備(README 相当はファイル末尾のコメントを参照)
 #   - Lightsail コンテナサービスを作成済みであること
 #   - AWS 側に GitHub OIDC 用の IAM ロールを作成済みであること
-#   - GitHub の Secrets に AWS_ROLE_ARN を登録済みであること
+#   - GitHub の Variables に AWS_ROLE_ARN を登録済みであること
 
 name: Deploy to Lightsail
 
@@ -47,7 +47,13 @@ jobs:
       # Actions はタグではなくコミット SHA で固定する(タグの付け替えによる改ざん対策)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      - run: echo ${{ vars.AWS_ROLE_ARN }}
+      # 一時的なデバッグ用: OIDC トークンのクレーム(sub など)をログに出力する
+      # 信頼ポリシーの sub を確認できたら削除する
+      - name: Debug OIDC claims
+        uses: steve-todorov/oidc-debugger-action@f9915fe9dc64133704c072eb59436373c23e9fdd # v1.0.1
+        continue-on-error: true
+        with:
+          audience: sts.amazonaws.com
 
       # 1. AWS 認証(長期的なアクセスキーを使わず OIDC で一時認証)
       - name: Configure AWS credentials
@@ -185,22 +191,29 @@ jobs:
 # 2) GitHub OIDC プロバイダと IAM ロールの作成(初回のみ)
 #    - IAM > ID プロバイダ に token.actions.githubusercontent.com を追加
 #      (audience: sts.amazonaws.com)
-#    - ロールの信頼ポリシーで、audience と対象リポジトリ・ブランチの両方を限定する
+#    - ロールの信頼ポリシーで、audience と対象リポジトリ・environment の両方を限定する
+#      (ジョブに environment を指定しているため、sub は environment 形式になる)
 #        "Condition": {
 #          "StringEquals": {
 #            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
 #            "token.actions.githubusercontent.com:sub":
-#                "repo:<OWNER>/<REPO>:ref:refs/heads/main"
+#                "repo:<OWNER>/<REPO>:environment:production"
 #          }
 #        }
 #    - ロールに付与する権限(例。必要に応じて Resource を対象サービスに絞る)
+#        lightsail:CreateContainerServiceRegistryLogin  # push-container-image が内部で使用
 #        lightsail:RegisterContainerImage
 #        lightsail:GetContainerImages
 #        lightsail:GetContainerServices
 #        lightsail:CreateContainerServiceDeployment
 #
-# 3) GitHub の Settings > Secrets and variables > Actions に
-#    AWS_ROLE_ARN(上記ロールのARN)を登録
+# 3) GitHub の Settings > Secrets and variables > Actions の Variables タブ
+#    (またはSettings > Environments > production の Environment variables)に
+#    AWS_ROLE_ARN(上記ロールのARN)を登録(Secrets ではない点に注意)
 #
-# 4) リポジトリのルートに Dockerfile を置く
+# 4) Settings > Environments > production > Deployment branches で
+#    main のみを許可する(信頼ポリシーではブランチを限定できないため、
+#    これがないと workflow_dispatch で他ブランチからもデプロイできてしまう)
+#
+# 5) リポジトリのルートに Dockerfile を置く
 # ---------------------------------------------------------------------------
