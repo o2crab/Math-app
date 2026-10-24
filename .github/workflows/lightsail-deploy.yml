@@ -47,14 +47,6 @@ jobs:
       # Actions はタグではなくコミット SHA で固定する(タグの付け替えによる改ざん対策)
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
-      # 一時的なデバッグ用: OIDC トークンのクレーム(sub など)をログに出力する
-      # 信頼ポリシーの sub を確認できたら削除する
-      - name: Debug OIDC claims
-        uses: steve-todorov/oidc-debugger-action@f9915fe9dc64133704c072eb59436373c23e9fdd # v1.0.1
-        continue-on-error: true
-        with:
-          audience: sts.amazonaws.com
-
       # 1. AWS 認証(長期的なアクセスキーを使わず OIDC で一時認証)
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -193,11 +185,13 @@ jobs:
 #      (audience: sts.amazonaws.com)
 #    - ロールの信頼ポリシーで、audience と対象リポジトリ・environment の両方を限定する
 #      (ジョブに environment を指定しているため、sub は environment 形式になる)
+#      (2026/7/15 以降に作成したリポジトリは、名前に加えて ID を含む形式になる。
+#       ID は https://api.github.com/repos/<OWNER>/<REPO> の owner.id と id で確認できる)
 #        "Condition": {
 #          "StringEquals": {
 #            "token.actions.githubusercontent.com:aud": "sts.amazonaws.com",
 #            "token.actions.githubusercontent.com:sub":
-#                "repo:<OWNER>/<REPO>:environment:production"
+#                "repo:o2crab@66447681/Math-app@1431916309:environment:production"
 #          }
 #        }
 #    - ロールに付与する権限(例。必要に応じて Resource を対象サービスに絞る)
