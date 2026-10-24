@@ -3,7 +3,6 @@ name = "backend"
 version = "0.1.0"
 requires-python = ">=3.13"
 dependencies = [
-    "d>=0.2.2",
     "flask>=3.1.3",
     "gunicorn>=26.2.0",
 ]

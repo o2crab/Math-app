@@ -2,12 +2,16 @@
 FROM node:22-slim AS frontend-build
 WORKDIR /frontend
 COPY frontend/package*.json ./
-RUN npm ci
+RUN npm ci --ignore-scripts
 COPY frontend/ ./
 RUN npm run build
 
+# --- Stage 2: アプリを起動 ---
 FROM python:3.13-slim
 COPY --from=ghcr.io/astral-sh/uv:0.13 /uv /uvx /bin/
+
+# アプリ実行用の非 root ユーザー(ファイルは root 所有のままにして書き換えを防ぐ)
+RUN useradd --system --uid 10001 --no-create-home app
 
 WORKDIR /app
 
@@ -26,5 +30,7 @@ COPY --from=frontend-build /frontend/dist ./static
 ENV PATH="/app/.venv/bin:$PATH" \
     PORT=8080
 EXPOSE 8080
+
+USER app
 
 CMD ["gunicorn", "--bind", "0.0.0.0:8080", "--workers", "2", "app:app"]

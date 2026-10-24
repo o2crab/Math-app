@@ -32,7 +32,7 @@ env:
   CONTAINER_NAME: app # デプロイ内のコンテナ名
   IMAGE_LABEL: app # Lightsail 上のイメージラベル
   CONTAINER_PORT: "8080" # アプリが待ち受けるポート
-  HEALTH_CHECK_PATH: /health # ヘルスチェック用パス
+  HEALTH_CHECK_PATH: /api/health # ヘルスチェック用パス
   # lightsailctl はバージョンを固定し、ハッシュ値を検証してから使う
   # 更新時は https://github.com/aws/lightsailctl/releases の checksums.txt から値を差し替える
   LIGHTSAILCTL_VERSION: 1.0.8
@@ -120,7 +120,7 @@ jobs:
                 timeoutSeconds: 5,
                 intervalSeconds: 10,
                 path: $path,
-                successCodes: "200-499"
+                successCodes: "200"
               }
             }' > public-endpoint.json
 

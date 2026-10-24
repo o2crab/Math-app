@@ -1,8 +1,10 @@
 **/node_modules
 **/__pycache__
 **/.venv
+.devcontainer
 .git
 .gitignore
-.devcontainer
+.github
 .env
+.env.*
 .DS_Store
